@@ -1,0 +1,47 @@
+name: Build Cache
+description: 'Caches our build artifacts'
+
+inputs:
+  os:
+    description: OS
+    required: true
+  node:
+    description: Node.js Version
+    required: true
+
+outputs:
+  node-cache-hit:
+    description: Node Modules Cache Hit
+    value: ${{ steps.cache-node.outputs.cache-hit }}
+  ts-cache-hit:
+    description: TypeScript Build Cache Hit
+    value: ${{ steps.cache-build.outputs.cache-hit }}
+
+runs:
+  using: "composite"
+
+  steps:
+
+    - name: Node Modules Caching
+      id: cache-node
+      uses: actions/cache@v2
+      with:
+        path: |
+          **/node_modules
+          **/*.node
+          !**/node_modules/@theia
+        key: node-${{ inputs.os }}-${{ inputs.node }}-${{ hashFiles('yarn.lock') }}
+
+    - name: Build Caching
+      id: cache-build
+      uses: actions/cache@v2
+      with:
+        path: |
+          **/*.js
+          **/*.js.map
+          **/*.d.ts
+          **/*.d.ts.map
+          **/*.md
+          packages/core/README.md
+          !**/node_modules
+        key: ts-${{ github.sha }}

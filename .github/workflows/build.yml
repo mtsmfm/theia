@@ -1,127 +1,246 @@
 name: Build
 
 on:
+  workflow_dispatch:
+  schedule:
+    # https://docs.github.com/en/actions/reference/events-that-trigger-workflows#scheduled-events-schedule
+    # Every day at 4am:
+    - cron: '0 4 * * *'
   push:
     branches:
       - master
-  workflow_dispatch:
   pull_request:
     branches:
       - master
-  schedule:
-    - cron: '0 4 * * *' # Runs every day at 4am: https://docs.github.com/en/actions/reference/events-that-trigger-workflows#scheduled-events-schedule
+
+env:
+  NODE_OPTIONS: --max_old_space_size=4096
 
 jobs:
 
-  build:
-    name: ${{ matrix.os }}, Node.js v${{ matrix.node }}
+  prepare:
 
     strategy:
       fail-fast: false
       matrix:
         os: [windows-2019, ubuntu-18.04, macos-10.15]
-        node: ['12.x']
+        node: ['12.x', '14.x']
 
+    name: Prepare ${{ matrix.os }}, Node.js v${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          fetch-depth: 0 # To fetch all history for all branches and tags. (Will be required for caching with lerna: https://github.com/markuplint/markuplint/pull/111)
+    - uses: actions/checkout@v2
 
-      - name: Use Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v1
-        with:
-          node-version: ${{ matrix.node }}
-          registry-url: 'https://registry.npmjs.org'
+    - name: Use Python 3.x
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.x'
 
-      - name: Use Python 3.x
-        uses: actions/setup-python@v2
-        with:
-          python-version: '3.x'
+    - name: Use Node.js ${{ matrix.node }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node }}
+        registry-url: 'https://registry.npmjs.org'
 
-      - name: Build
-        shell: bash
-        run: |
-          yarn --skip-integrity-check --network-timeout 100000
-          yarn lint
-          npx electron-replace-ffmpeg
-          npx electron-codecs-test
-          yarn build:examples
-          yarn download:plugins
-          ./scripts/check_git_status.sh
-        env:
-          NODE_OPTIONS: --max_old_space_size=4096
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # https://github.com/microsoft/vscode-ripgrep/issues/9
+    - uses: ./.github/actions/build-cache
+      with:
+        os: ${{ matrix.os }}
+        node: ${{ matrix.node }}
 
-      - name: Test (headless)
-        if: matrix.tests != 'skip'
-        shell: bash
-        run: |
-          yarn test:theia
+    - name: Prepare Packages
+      run: yarn install --ignore-engines
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # https://github.com/microsoft/vscode-ripgrep/issues/9
 
-      - name: Test (browser)
-        if: matrix.tests != 'skip' && runner.os == 'Linux'
-        uses: GabrielBB/xvfb-action@v1
-        with:
-          run: yarn browser test
+    - name: Electron Checks
+      run: |
+        npx electron-replace-ffmpeg
+        npx electron-codecs-test
 
-      - name: Test (electron)
-        if: matrix.tests != 'skip' && runner.os == 'Linux'
-        uses: GabrielBB/xvfb-action@v1
-        with:
-          run: yarn electron test
+  lint:
+    needs: prepare
 
-  publish:
-    needs: build
-    if: github.ref == 'refs/heads/master' && github.event_name != 'schedule' # We still publish the manually dispatched workflows: 'workflow_dispatch'.
-    runs-on: ubuntu-18.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-18.04]
+        node: ['12.x']
 
-    # The current approach is silly. We should be smarter and use `actions/upload-artifact` and `actions/download-artifact` instead of rebuilding
-    # everything from scratch again. (git checkout, Node.js install, yarn, etc.) It was not possible to share artifacts on Travis CI without an
-    # external storage (such as S3), so we did rebuild everything before the npm publish. We should overcome this limitation with GH Actions.
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          fetch-depth: 0 # To fetch all history for all branches and tags. (Will be required for caching with lerna: https://github.com/markuplint/markuplint/pull/111)
+    - uses: actions/checkout@v2
 
-      - name: Use Node.js 12.x
-        uses: actions/setup-node@v1
-        with:
-          node-version: '12.x'
-          registry-url: 'https://registry.npmjs.org'
+    - name: Use Node.js ${{ matrix.node }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node }}
+        registry-url: 'https://registry.npmjs.org'
 
-      - name: Use Python 3.x
-        uses: actions/setup-python@v2
-        with:
-          python-version: '3.x'
+    - uses: ./.github/actions/build-cache
+      with:
+        os: ${{ matrix.os }}
+        node: ${{ matrix.node }}
 
-      - name: Pre-Publish
-        run: |
-          yarn --skip-integrity-check --network-timeout 100000
-          yarn build:ts
-          yarn docs
-        env:
-          NODE_OPTIONS: --max_old_space_size=4096
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # https://github.com/microsoft/vscode-ripgrep/issues/9
+    - name: Lint
+      run: yarn lint
 
-      - name: Publish NPM
-        uses: nick-invision/retry@v2
-        with:
-          timeout_minutes: 5
-          retry_wait_seconds: 30
-          max_attempts: 3
-          retry_on: error
-          command: yarn publish:next
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }} # The variable name comes from here: https://github.com/actions/setup-node/blob/70b9252472eee7495c93bb1588261539c3c2b98d/src/authutil.ts#L48
+  unit_tests:
+    needs: prepare
 
-      - name: Publish GH Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./gh-pages
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2019, ubuntu-18.04, macos-10.15]
+        node: ['12.x', '14.x']
+
+    name: Browser Tests ${{ matrix.os }}, Node.js v${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Use Node.js ${{ matrix.node }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node }}
+        registry-url: 'https://registry.npmjs.org'
+
+    - uses: ./.github/actions/build-cache
+      with:
+        os: ${{ matrix.os }}
+        node: ${{ matrix.node }}
+
+    - name: Unit Tests
+      run: yarn test:theia
+
+  browser_integration_tests:
+    needs: prepare
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # os: [windows-2019, ubuntu-18.04, macos-10.15]
+        os: [ubuntu-18.04]
+        node: ['12.x', '14.x']
+
+    name: Browser Integration Tests ${{ matrix.os }}, Node.js v${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Use Node.js ${{ matrix.node }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node }}
+        registry-url: 'https://registry.npmjs.org'
+
+    - uses: ./.github/actions/build-cache
+      with:
+        os: ${{ matrix.os }}
+        node: ${{ matrix.node }}
+
+    - name: Build Browser Example
+      run: yarn browser build
+
+    - name: Download Plugins
+      run: yarn download:plugins
+
+    - name: Browser Integration Tests
+      uses: GabrielBB/xvfb-action@v1
+      with:
+        run: yarn browser test
+
+  electron_integration_tests:
+    needs: prepare
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Electron runs independently from Node.js,
+        # so we only need to test different operating systems:
+        os: [windows-2019, ubuntu-18.04, macos-10.15]
+        node: ['12.x']
+
+    name: Electron Integration Tests ${{ matrix.os }}, Node.js v${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Use Node.js ${{ matrix.node }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node }}
+        registry-url: 'https://registry.npmjs.org'
+
+    - uses: ./.github/actions/build-cache
+      with:
+        os: ${{ matrix.os }}
+        node: ${{ matrix.node }}
+
+    - name: Download Plugins
+      run: yarn download:plugins
+
+    - name: Build Electron Example
+      run: yarn electron build
+
+    - name: Electron Integration Tests
+      uses: GabrielBB/xvfb-action@v1
+      with:
+        run: yarn electron test
+
+  # publish:
+  #   needs: prepare
+  #   if: github.ref == 'refs/heads/master' && github.event_name != 'schedule' # We still publish the manually dispatched workflows: 'workflow_dispatch'.
+  #   runs-on: ubuntu-18.04
+
+  #   # The current approach is silly. We should be smarter and use `actions/upload-artifact` and `actions/download-artifact` instead of rebuilding
+  #   # everything from scratch again. (git checkout, Node.js install, yarn, etc.) It was not possible to share artifacts on Travis CI without an
+  #   # external storage (such as S3), so we did rebuild everything before the npm publish. We should overcome this limitation with GH Actions.
+
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v2
+  #       with:
+  #         fetch-depth: 0 # To fetch all history for all branches and tags. (Will be required for caching with lerna: https://github.com/markuplint/markuplint/pull/111)
+
+  #     - name: Use Node.js 12.x
+  #       uses: actions/setup-node@v1
+  #       with:
+  #         node-version: '12.x'
+  #         registry-url: 'https://registry.npmjs.org'
+
+  #     - name: Use Python 3.x
+  #       uses: actions/setup-python@v2
+  #       with:
+  #         python-version: '3.x'
+
+  #     - name: Pre-Publish
+  #       run: |
+  #         yarn --skip-integrity-check --network-timeout 100000
+  #         yarn build:ts
+  #         yarn docs
+  #       env:
+  #         NODE_OPTIONS: --max_old_space_size=4096
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # https://github.com/microsoft/vscode-ripgrep/issues/9
+
+  #     - name: Publish NPM
+  #       uses: nick-invision/retry@v2
+  #       with:
+  #         timeout_minutes: 5
+  #         retry_wait_seconds: 30
+  #         max_attempts: 3
+  #         retry_on: error
+  #         command: yarn publish:next
+  #       env:
+  #         NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }} # The variable name comes from here: https://github.com/actions/setup-node/blob/70b9252472eee7495c93bb1588261539c3c2b98d/src/authutil.ts#L48
+
+  #     - name: Publish GH Pages
+  #       uses: peaceiris/actions-gh-pages@v3
+  #       with:
+  #         github_token: ${{ secrets.GITHUB_TOKEN }}
+  #         publish_dir: ./gh-pages
