@@ -144,6 +144,7 @@ export class PluginHostRPC {
 
                 });
                 if (plugin.pluginPath) {
+                    console.log("plugin.pluginPath")
                     return require(plugin.pluginPath);
                 }
             },
