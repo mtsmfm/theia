@@ -40,6 +40,13 @@ export function isPromiseCanceledError(error: any): boolean {
     return error instanceof Error && error.name === canceledName && error.message === canceledName;
 }
 
+export class CancellationError extends Error {
+    constructor() {
+        super(canceledName);
+        this.name = this.message;
+    }
+}
+
 export function getIconUris(iconPath: theia.QuickInputButton['iconPath']): { dark: URI, light: URI } | { id: string } {
     if (iconPath instanceof ThemeIcon) {
         return { id: iconPath.id };

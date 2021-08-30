@@ -21,7 +21,7 @@ import * as theia from '@theia/plugin';
 import { CommandRegistryImpl } from './command-registry';
 import { Emitter } from '@theia/core/lib/common/event';
 import { CancellationTokenSource } from '@theia/core/lib/common/cancellation';
-import { QuickOpenExtImpl } from './quick-open';
+import { QuickOpenExtImpl, CancellationError } from './quick-open';
 import {
     MAIN_RPC_CONTEXT,
     Plugin as InternalPlugin,
@@ -952,7 +952,8 @@ export function createAPIFactory(
             SemanticTokensEdit,
             ColorThemeKind,
             SourceControlInputBoxValidationType,
-            FileDecoration
+            FileDecoration,
+            CancellationError
         };
     };
 }

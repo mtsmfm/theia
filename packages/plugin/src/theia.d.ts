@@ -5222,6 +5222,13 @@ declare module '@theia/plugin' {
         size: number;
     }
 
+    export class CancellationError extends Error {
+        /**
+         * Creates a new cancellation error.
+         */
+        constructor();
+    }
+
     /**
      * A type that filesystem providers should use to signal errors.
      *
